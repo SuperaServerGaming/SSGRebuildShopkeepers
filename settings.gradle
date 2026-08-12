@@ -1,24 +1,15 @@
 rootProject.name = 'shopkeepers'
 
+// SSG fork: trimmed to only the module we actually deploy (Folia/Paper 26.2), since the
+// legacy Spigot-only modules require CraftBukkit artifacts built locally via BuildTools that
+// we have no use for and don't want to maintain. See modules/dist/build.gradle for the
+// matching trim of its nmsModules list. 'test' dropped too: it depended on the removed
+// v1_21_R5 module and nothing else in this project depends on 'test'.
 def subprojects = [
 	'external-annotations',
 	'api',
 	'main',
-	'v1_21_R5',
-	'v1_21_R5_paper',
-	'v1_21_R6',
-	'v1_21_R6_paper',
-	'v1_21_R7',
-	'v1_21_R7_paper',
-	'v1_21_R8',
-	'v1_21_R8_paper',
-	'v1_21_R9',
-	'v1_21_R9_paper',
-	'v26_1_R1',
-	'v26_1_R1_paper',
-	'v26_2_R1',
 	'v26_2_R1_paper',
-	'test',
 	'dist'
 ]
 
