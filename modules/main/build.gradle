@@ -38,8 +38,13 @@ dependencies {
 	// compileOnly: Omits these dependencies from the transitively inherited apiElements and
 	// runtimeElements. However, we need to manually add these dependencies to our test dependencies
 	// if needed.
-	compileOnly libs.spigot.api // Includes the Bukkit API
-	compileOnly libs.worldguard.bukkit
+	// Folia scheduler API used in various places requires Paper's version of the Bukkit API:
+	compileOnly libs.paper.api // Includes the Bukkit API
+	(compileOnly libs.worldguard.bukkit) {
+		// Excludes its transitive (outdated) Bukkit dependency, which otherwise conflicts with the
+		// Bukkit capability provided by the Paper API:
+		exclude group: 'org.bukkit', module: 'bukkit'
+	}
 	compileOnly libs.towny
 	(compileOnly libs.citizens.main) { transitive = false }
 	compileOnly libs.vault.api

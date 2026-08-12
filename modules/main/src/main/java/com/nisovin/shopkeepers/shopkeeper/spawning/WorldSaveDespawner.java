@@ -2,10 +2,10 @@ package com.nisovin.shopkeepers.shopkeeper.spawning;
 
 import java.util.function.Predicate;
 
-import org.bukkit.Bukkit;
 import org.bukkit.World;
-import org.bukkit.scheduler.BukkitTask;
 import org.checkerframework.checker.nullness.qual.Nullable;
+
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 
 import com.nisovin.shopkeepers.SKShopkeepersPlugin;
 import com.nisovin.shopkeepers.debug.DebugOptions;
@@ -13,6 +13,7 @@ import com.nisovin.shopkeepers.shopkeeper.AbstractShopkeeper;
 import com.nisovin.shopkeepers.shopkeeper.registry.SKShopkeeperRegistry;
 import com.nisovin.shopkeepers.shopkeeper.spawning.ShopkeeperSpawnState.State;
 import com.nisovin.shopkeepers.shopobjects.AbstractShopObjectType;
+import com.nisovin.shopkeepers.util.bukkit.SchedulerUtils;
 import com.nisovin.shopkeepers.util.java.Validate;
 import com.nisovin.shopkeepers.util.logging.Log;
 
@@ -105,7 +106,7 @@ class WorldSaveDespawner {
 	class RespawnShopkeepersAfterWorldSaveTask implements Runnable {
 
 		private final WorldData worldData;
-		private @Nullable BukkitTask task;
+		private @Nullable ScheduledTask task;
 
 		RespawnShopkeepersAfterWorldSaveTask(WorldData worldData) {
 			assert worldData != null;
@@ -114,7 +115,9 @@ class WorldSaveDespawner {
 
 		void start() {
 			assert !worldData.isWorldSaveRespawnPending();
-			this.task = Bukkit.getScheduler().runTask(plugin, this);
+			// The body just delegates to spawner.spawnShopkeepersInWorld(...), which itself
+			// dispatches per-chunk to the correct region, so this outer task can run globally.
+			this.task = SchedulerUtils.runGlobalLaterOrOmit(plugin, this, 1L);
 			worldData.setWorldSaveRespawnTask(this);
 		}
 

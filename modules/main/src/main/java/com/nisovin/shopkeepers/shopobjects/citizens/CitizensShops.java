@@ -23,6 +23,7 @@ import com.nisovin.shopkeepers.config.Settings;
 import com.nisovin.shopkeepers.dependencies.citizens.CitizensDependency;
 import com.nisovin.shopkeepers.shopkeeper.AbstractShopkeeper;
 import com.nisovin.shopkeepers.shopkeeper.registry.SKShopkeeperRegistry;
+import com.nisovin.shopkeepers.util.bukkit.SchedulerUtils;
 import com.nisovin.shopkeepers.util.bukkit.TextUtils;
 import com.nisovin.shopkeepers.util.java.TimeUtils;
 import com.nisovin.shopkeepers.util.java.Validate;
@@ -180,7 +181,7 @@ public class CitizensShops {
 		citizensListener.onEnable();
 
 		// Delayed to run after shopkeepers and NPCs were loaded:
-		Bukkit.getScheduler().runTaskLater(plugin, new DelayedSetupTask(), 3L);
+		SchedulerUtils.runGlobalLaterOrOmit(plugin, new DelayedSetupTask(), 3L);
 
 		// Enabled:
 		citizensShopsEnabled = true;
@@ -194,9 +195,22 @@ public class CitizensShops {
 			// Check for invalid Citizens shopkeepers:
 			validateCitizenShopkeepers(Settings.deleteInvalidCitizenShopkeepers, false);
 
-			// Inform the Citizens NPC shop objects:
+			// Inform the Citizens NPC shop objects. This synchronizes each shop object with its NPC
+			// (mutating its entity if spawned), so it is dispatched to the region owning that
+			// specific shopkeeper's entity/location.
 			shopkeepersByNpcId.values().stream().flatMap(List::stream).forEach(shopkeeper -> {
-				((SKCitizensShopObject) shopkeeper.getShopObject()).onCitizensShopsEnabled();
+				SKCitizensShopObject shopObject = (SKCitizensShopObject) shopkeeper.getShopObject();
+				Entity entity = shopObject.getEntity();
+				if (entity != null) {
+					SchedulerUtils.runOnEntityOrOmit(plugin, entity, shopObject::onCitizensShopsEnabled);
+					return;
+				}
+				Location location = shopkeeper.getLocation();
+				if (location != null) {
+					SchedulerUtils.runOnLocationOrOmit(plugin, location, shopObject::onCitizensShopsEnabled);
+				} else {
+					SchedulerUtils.runGlobalOrOmit(plugin, shopObject::onCitizensShopsEnabled);
+				}
 			});
 		}
 	}

@@ -1,9 +1,12 @@
 package com.nisovin.shopkeepers.commands.shopkeepers;
 
+import java.util.function.Consumer;
+
 import org.bukkit.ChatColor;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
-import org.bukkit.scheduler.BukkitRunnable;
+
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 
 import com.nisovin.shopkeepers.SKShopkeepersPlugin;
 import com.nisovin.shopkeepers.api.ShopkeepersPlugin;
@@ -86,19 +89,20 @@ class CommandTestDamage extends PlayerCommand {
 				+ "&a, Per tick: &e" + timesPerTick + "&a, Duration &e" + durationTicks
 				+ " ticks &a..."));
 
-		new BukkitRunnable() {
+		// Mutates the targeted entity every tick, so it has to run on the region that ticks it.
+		target.getScheduler().runAtFixedRate(plugin, new Consumer<ScheduledTask>() {
 
 			private int tickCounter = 0;
 
 			@Override
-			public void run() {
+			public void accept(ScheduledTask scheduledTask) {
 				boolean playerValid = player.isValid();
 				if (tickCounter >= durationTicks || !playerValid || !target.isValid()) {
 					// We are done:
 					if (playerValid) {
 						player.sendMessage(ChatColor.GREEN + "... Done");
 					}
-					this.cancel();
+					scheduledTask.cancel();
 					return;
 				}
 
@@ -126,6 +130,6 @@ class CommandTestDamage extends PlayerCommand {
 							+ ChatColor.GRAY + ")");
 				}
 			}
-		}.runTaskTimer(plugin, 1L, 1L);
+		}, null, 1L, 1L);
 	}
 }

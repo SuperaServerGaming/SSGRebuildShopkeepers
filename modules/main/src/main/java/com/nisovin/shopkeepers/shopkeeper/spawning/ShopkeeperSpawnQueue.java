@@ -2,11 +2,13 @@ package com.nisovin.shopkeepers.shopkeeper.spawning;
 
 import java.util.function.Consumer;
 
+import org.bukkit.Location;
 import org.bukkit.plugin.Plugin;
 
 import com.nisovin.shopkeepers.shopkeeper.AbstractShopkeeper;
 import com.nisovin.shopkeepers.shopkeeper.spawning.ShopkeeperSpawnState.State;
 import com.nisovin.shopkeepers.shopobjects.AbstractShopObject;
+import com.nisovin.shopkeepers.util.bukkit.SchedulerUtils;
 import com.nisovin.shopkeepers.util.java.Validate;
 import com.nisovin.shopkeepers.util.taskqueue.TaskQueue;
 
@@ -30,11 +32,13 @@ public class ShopkeeperSpawnQueue extends TaskQueue<AbstractShopkeeper> {
 	// between 0.05-0.25ms, with an average of around 0.1ms.
 	private static final int SPAWNS_PER_EXECUTION = 6;
 
+	private final Plugin plugin;
 	private final Consumer<? super AbstractShopkeeper> spawner;
 
 	ShopkeeperSpawnQueue(Plugin plugin, Consumer<? super AbstractShopkeeper> spawner) {
 		super(plugin, SPAWN_TASK_PERIOD_TICKS, SPAWNS_PER_EXECUTION);
 		Validate.notNull(spawner, "spawner is null");
+		this.plugin = plugin;
 		this.spawner = spawner;
 	}
 
@@ -94,7 +98,14 @@ public class ShopkeeperSpawnQueue extends TaskQueue<AbstractShopkeeper> {
 		// Reset the shopkeeper's 'queued' state:
 		this.resetQueued(shopkeeper);
 
-		// Spawn the shopkeeper:
-		spawner.accept(shopkeeper);
+		// Spawning mutates this shopkeeper's own shop object/entity, so it is dispatched to the
+		// region owning its location (the queue itself runs on the global scheduler and processes
+		// shopkeepers from potentially many different locations each execution).
+		Location location = shopkeeper.getLocation();
+		if (location != null) {
+			SchedulerUtils.runOnLocationOrOmit(plugin, location, () -> spawner.accept(shopkeeper));
+		} else {
+			SchedulerUtils.runGlobalOrOmit(plugin, () -> spawner.accept(shopkeeper));
+		}
 	}
 }

@@ -9,8 +9,8 @@ import java.util.Map.Entry;
 import java.util.concurrent.TimeUnit;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.OfflinePlayer;
-import org.bukkit.scheduler.BukkitRunnable;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 import com.nisovin.shopkeepers.SKShopkeepersPlugin;
@@ -100,23 +100,19 @@ class DeleteShopsOfInactivePlayersProcedure {
 
 	private void asyncCheckInactivityOfAllShopOwnersAndContinue() {
 		// We retrieve the OfflinePlayers and their 'last played' times asynchronously:
-		new BukkitRunnable() {
-			@Override
-			public void run() {
-				// Set up the data for all inactive shop owners, and remove all shop owners that are
-				// not inactive:
-				setUpInactiveShopOwners();
+		Bukkit.getAsyncScheduler().runNow(plugin, scheduledTask -> {
+			// Set up the data for all inactive shop owners, and remove all shop owners that are
+			// not inactive:
+			setUpInactiveShopOwners();
 
-				// Abort if no inactive players were found:
-				if (inactivePlayers.isEmpty()) return;
+			// Abort if no inactive players were found:
+			if (inactivePlayers.isEmpty()) return;
 
-				// Abort if the task has been cancelled in the meantime (e.g. if the plugin has been
-				// disabled or reloaded):
-				if (this.isCancelled()) return;
+			// Abort if the plugin has been disabled or reloaded in the meantime:
+			if (!plugin.isEnabled()) return;
 
-				SchedulerUtils.runTaskOrOmit(plugin, () -> continueWithInactiveShopOwners());
-			}
-		}.runTaskAsynchronously(plugin);
+			SchedulerUtils.runGlobalOrOmit(plugin, () -> continueWithInactiveShopOwners());
+		});
 	}
 
 	// This may be called asynchronously.
@@ -206,7 +202,8 @@ class DeleteShopsOfInactivePlayersProcedure {
 				return;
 			}
 
-			// Delete the shopkeepers:
+			// Delete the shopkeepers. Each deletion despawns that shopkeeper's own shop object, so
+			// it is dispatched to the region owning that specific shopkeeper's location.
 			shopkeepers.forEach(playerShop -> {
 				if (!playerShop.isValid()) {
 					// The shopkeeper has already been removed in the meantime.
@@ -220,7 +217,12 @@ class DeleteShopsOfInactivePlayersProcedure {
 				Log.info(playerShop.getUniqueIdLogPrefix() + "Deletion due to inactivity of owner "
 						+ playerShop.getOwnerString() + " (last seen "
 						+ inactivePlayerData.getLastSeenDaysAgo() + " days ago).");
-				playerShop.delete();
+				Location shopLocation = playerShop.getLocation();
+				if (shopLocation != null) {
+					SchedulerUtils.runOnLocationOrOmit(plugin, shopLocation, playerShop::delete);
+				} else {
+					SchedulerUtils.runGlobalOrOmit(plugin, playerShop::delete);
+				}
 			});
 		});
 

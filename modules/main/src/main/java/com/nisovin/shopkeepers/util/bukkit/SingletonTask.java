@@ -4,8 +4,9 @@ import java.util.concurrent.TimeUnit;
 
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitTask;
 import org.checkerframework.checker.nullness.qual.Nullable;
+
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 
 import com.nisovin.shopkeepers.api.internal.util.Unsafe;
 import com.nisovin.shopkeepers.util.java.Validate;
@@ -65,8 +66,8 @@ public abstract class SingletonTask {
 	private final Object executionLock = new Object();
 
 	private State state = State.NOT_RUNNING;
-	// The Bukkit task asynchronously executing this task. Only relevant for async executions.
-	private @Nullable BukkitTask asyncTask = null;
+	// The task asynchronously executing this task. Only relevant for async executions.
+	private @Nullable ScheduledTask asyncTask = null;
 	// The (internal) callbacks of the current execution:
 	// Run immediately, possibly asynchronously:
 	private @Nullable Runnable internalCallback = null;
@@ -335,7 +336,7 @@ public abstract class SingletonTask {
 			// callback are cancelled and invoked manually.
 			// Also note: If this callback is run from the main thread, the sync callback is run
 			// immediately.
-			SchedulerUtils.runOnMainThreadOrOmit(
+			SchedulerUtils.runGlobalOrOmit(
 					plugin,
 					Unsafe.assertNonNull(internalSyncCallback)
 			);
@@ -377,13 +378,13 @@ public abstract class SingletonTask {
 	 */
 	public abstract class InternalAsyncTask implements Runnable {
 
-		private @Nullable BukkitTask task; // Captured Bukkit task
+		private @Nullable ScheduledTask task; // Captured task
 
 		protected InternalAsyncTask() {
 		}
 
-		private BukkitTask runTaskAsynchronously() {
-			this.task = Bukkit.getScheduler().runTaskAsynchronously(plugin, this);
+		private ScheduledTask runTaskAsynchronously() {
+			this.task = Bukkit.getAsyncScheduler().runNow(plugin, scheduledTask -> this.run());
 			return task;
 		}
 
@@ -460,7 +461,7 @@ public abstract class SingletonTask {
 	// asyncTask: The async task executing this method. Null for sync executions.
 	// If the async task got cancelled and another execution has already been started, this may not
 	// match the current value of this class' asyncTask variable.
-	private void executeTask(@Nullable BukkitTask asyncTask) {
+	private void executeTask(@Nullable ScheduledTask asyncTask) {
 		if (asyncTask != null) {
 			// Asynchronous execution:
 			// Requires the lock for coordination with the main thread, and might have been

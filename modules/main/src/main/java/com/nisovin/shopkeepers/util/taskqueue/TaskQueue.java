@@ -5,15 +5,19 @@ import java.util.Queue;
 
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitScheduler;
-import org.bukkit.scheduler.BukkitTask;
 import org.checkerframework.checker.nullness.qual.NonNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
+
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 
 import com.nisovin.shopkeepers.util.java.Validate;
 
 /**
- * A {@link BukkitScheduler} task that processes a queue of work units.
+ * A global-region-scheduler task that processes a queue of work units.
+ * <p>
+ * The queue itself only decides WHEN to process pending work units, not WHERE: since work units
+ * can be tied to different locations/entities, {@link #process(Object)} implementations are
+ * responsible for dispatching their own work to the correct region if needed.
  * <p>
  * A {@link TaskQueue} has two main characteristics: The rate at which the task executes and can
  * therefore process pending work units, and how many of these work units it processes per
@@ -69,7 +73,7 @@ public abstract class TaskQueue<@NonNull T> implements TaskQueueStatistics {
 	private final int workUnitsPerExecution;
 	private final Queue<@NonNull T> pending = new ArrayDeque<>();
 	private int maxPending = 0;
-	private @Nullable BukkitTask task = null;
+	private @Nullable ScheduledTask task = null;
 
 	/**
 	 * Creates a new {@link TaskQueue}.
@@ -188,7 +192,13 @@ public abstract class TaskQueue<@NonNull T> implements TaskQueueStatistics {
 		}
 
 		// Start new task:
-		task = Bukkit.getScheduler().runTaskTimer(plugin, this.createTask(), 1, taskPeriodTicks);
+		Runnable innerTask = this.createTask();
+		task = Bukkit.getGlobalRegionScheduler().runAtFixedRate(
+				plugin,
+				scheduledTask -> innerTask.run(),
+				1,
+				taskPeriodTicks
+		);
 	}
 
 	private void stopTask() {

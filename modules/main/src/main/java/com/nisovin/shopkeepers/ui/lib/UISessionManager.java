@@ -301,7 +301,7 @@ public final class UISessionManager {
 		// Deactivate currently active UIs for this subject:
 		this.deactivateUIsForContext(contextObject);
 
-		SchedulerUtils.runTaskOrOmit(plugin, () -> {
+		SchedulerUtils.runGlobalOrOmit(plugin, () -> {
 			this.abortUISessionsForContext(contextObject);
 		});
 	}
@@ -313,7 +313,7 @@ public final class UISessionManager {
 		// Deactivate currently active UIs for this subject:
 		this.deactivateUIsForContext(contextObject, uiType);
 
-		SchedulerUtils.runTaskOrOmit(plugin, () -> {
+		SchedulerUtils.runGlobalOrOmit(plugin, () -> {
 			this.abortUISessionsForContext(contextObject, uiType);
 		});
 	}

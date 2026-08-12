@@ -2,11 +2,12 @@ package com.nisovin.shopkeepers.shopobjects.entity.base;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -21,8 +22,9 @@ import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
-import org.bukkit.scheduler.BukkitTask;
 import org.checkerframework.checker.nullness.qual.Nullable;
+
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 
 import com.nisovin.shopkeepers.SKShopkeepersPlugin;
 import com.nisovin.shopkeepers.api.internal.util.Unsafe;
@@ -31,6 +33,7 @@ import com.nisovin.shopkeepers.compat.Compat;
 import com.nisovin.shopkeepers.config.Settings;
 import com.nisovin.shopkeepers.util.bukkit.EntityUtils;
 import com.nisovin.shopkeepers.util.bukkit.MutableChunkCoords;
+import com.nisovin.shopkeepers.util.bukkit.SchedulerUtils;
 import com.nisovin.shopkeepers.util.bukkit.WorldUtils;
 import com.nisovin.shopkeepers.util.java.CyclicCounter;
 import com.nisovin.shopkeepers.util.java.RateLimiter;
@@ -110,10 +113,6 @@ public class EntityAI implements Listener {
 			FALLING_CHECK_PERIOD_TICKS + 1
 	);
 
-	// Temporarily re-used objects:
-	private static final Location sharedLocation = new Location(null, 0, 0, 0);
-	private static final MutableChunkCoords sharedChunkCoords = new MutableChunkCoords();
-
 	private final SKShopkeepersPlugin plugin;
 	/**
 	 * The MAX_FALLING_DISTANCE_PER_TICK scaled according to the configured tick rate.
@@ -173,11 +172,16 @@ public class EntityAI implements Listener {
 	private static class ChunkData {
 
 		private final ChunkCoords chunkCoords;
-		// We don't expect there to be many entities within a single chunk, so using a list is okay:
-		private final List<EntityData> entities = new ArrayList<>();
-		// Active by default for fast initial reactions in case players are nearby:
-		public boolean activeGravity;
-		public boolean activeAI = true;
+		// We don't expect there to be many entities within a single chunk, so using a list is okay.
+		// Copy-on-write: entities of a chunk are only added/removed occasionally (shop
+		// spawn/despawn), but read every time this chunk's entities are processed, which can now
+		// happen concurrently with adds/removes on other regions.
+		private final List<EntityData> entities = new CopyOnWriteArrayList<>();
+		// Active by default for fast initial reactions in case players are nearby.
+		// Volatile: written from the global-scheduler-dispatched activation sweep, read from the
+		// per-chunk-dispatched entity processing on that chunk's own region thread.
+		public volatile boolean activeGravity;
+		public volatile boolean activeAI = true;
 
 		public ChunkData(ChunkCoords chunkCoords, boolean activeGravity) {
 			this.chunkCoords = chunkCoords;
@@ -185,19 +189,22 @@ public class EntityAI implements Listener {
 		}
 	}
 
-	private final Map<ChunkCoords, ChunkData> chunks = new LinkedHashMap<>();
+	// Thread-safe: shop objects can now be added/removed (on spawn/despawn) from whichever region
+	// owns them, concurrently with the AI task's own per-chunk dispatched processing.
+	private final Map<ChunkCoords, ChunkData> chunks = new ConcurrentHashMap<>();
 	// Index for fast removal: Shop object -> EntityData
-	private final Map<BaseEntityShopObject<?>, EntityData> shopObjects = new HashMap<>();
+	private final Map<BaseEntityShopObject<?>, EntityData> shopObjects = new ConcurrentHashMap<>();
 
-	private @Nullable BukkitTask aiTask = null;
-	private boolean currentlyRunning = false;
+	private @Nullable ScheduledTask aiTask = null;
+	private volatile boolean currentlyRunning = false;
 
-	// Statistics:
-	private int activeAIChunksCount = 0;
-	private int activeAIEntityCount = 0;
+	// Statistics. Atomic: shop objects can now be added/removed, and entities processed, from
+	// multiple regions concurrently.
+	private final AtomicInteger activeAIChunksCount = new AtomicInteger();
+	private final AtomicInteger activeAIEntityCount = new AtomicInteger();
 
-	private int activeGravityChunksCount = 0;
-	private int activeGravityEntityCount = 0;
+	private final AtomicInteger activeGravityChunksCount = new AtomicInteger();
+	private final AtomicInteger activeGravityEntityCount = new AtomicInteger();
 
 	private final Timer totalTimings = new Timer();
 	// Note: This only captures the periodic full activation updates, and not the player-specific
@@ -238,8 +245,6 @@ public class EntityAI implements Listener {
 
 	public void addShopObject(BaseEntityShopObject<?> shopObject) {
 		Validate.notNull(shopObject, "shopObject is null");
-		Validate.State.isTrue(!currentlyRunning,
-				"Cannot add shop objects while the AI task is running!");
 		Validate.isTrue(!shopObjects.containsKey(shopObject), "shopObject is already added");
 
 		// Note: We expect that the shop object is unregistered again when its entity is despawned.
@@ -250,23 +255,23 @@ public class EntityAI implements Listener {
 
 		// Determine entity chunk (asserts that the entity won't move!):
 		// We assert that the chunk is loaded (checked above by isValid call).
-		Location entityLocation = Unsafe.assertNonNull(entity.getLocation(sharedLocation));
-		sharedChunkCoords.set(entityLocation);
-		sharedLocation.setWorld(null); // Reset
+		Location entityLocation = Unsafe.assertNonNull(entity.getLocation(new Location(null, 0, 0, 0)));
+		ChunkCoords chunkCoords = new ChunkCoords(entityLocation);
 
-		// Add chunk entry:
-		ChunkData chunkData = chunks.get(sharedChunkCoords);
-		if (chunkData == null) {
-			ChunkCoords chunkCoords = new ChunkCoords(sharedChunkCoords); // Copy
-			chunkData = new ChunkData(chunkCoords, customGravityEnabled);
-			chunks.put(chunkCoords, chunkData);
-
+		// Add chunk entry (atomic: different shop objects can be added to the same new chunk
+		// concurrently from different regions):
+		boolean[] isNewChunk = { false };
+		ChunkData chunkData = chunks.computeIfAbsent(chunkCoords, cc -> {
+			isNewChunk[0] = true;
+			return new ChunkData(cc, customGravityEnabled);
+		});
+		if (isNewChunk[0]) {
 			// Update chunk statistics:
 			if (chunkData.activeAI) {
-				activeAIChunksCount++;
+				activeAIChunksCount.incrementAndGet();
 			}
 			if (chunkData.activeGravity) {
-				activeGravityChunksCount++;
+				activeGravityChunksCount.incrementAndGet();
 			}
 		}
 
@@ -277,10 +282,10 @@ public class EntityAI implements Listener {
 
 		// Update entity statistics:
 		if (chunkData.activeAI) {
-			activeAIEntityCount++;
+			activeAIEntityCount.incrementAndGet();
 		}
 		if (chunkData.activeGravity) {
-			activeGravityEntityCount++;
+			activeGravityEntityCount.incrementAndGet();
 		}
 
 		// Start the AI task, if it isn't already running:
@@ -288,32 +293,34 @@ public class EntityAI implements Listener {
 	}
 
 	public void removeShopObject(BaseEntityShopObject<?> shopObject) {
-		Validate.State.isTrue(!currentlyRunning,
-				"Cannot remove entities while the AI task is running!");
 		// Remove shop object:
 		@Nullable EntityData entityData = shopObjects.remove(shopObject);
 		if (entityData == null) return; // Shop object was not added
 
 		ChunkData chunkData = entityData.chunkData;
 		chunkData.entities.remove(entityData);
+		// Note: This chunk removal races against a concurrent addShopObject() re-adding an entity
+		// to the same chunk on another region; in the unlikely event both happen at once, at worst
+		// a chunk is removed and immediately re-added on the next addShopObject() call, which is
+		// harmless (chunks.computeIfAbsent() above always re-creates it as needed).
 		if (chunkData.entities.isEmpty()) {
-			chunks.remove(chunkData.chunkCoords);
+			chunks.remove(chunkData.chunkCoords, chunkData);
 
 			// Update chunk statistics:
 			if (chunkData.activeAI) {
-				activeAIChunksCount--;
+				activeAIChunksCount.decrementAndGet();
 			}
 			if (chunkData.activeGravity) {
-				activeGravityChunksCount--;
+				activeGravityChunksCount.decrementAndGet();
 			}
 		}
 
 		// Update entity statistics:
 		if (chunkData.activeAI) {
-			activeAIEntityCount--;
+			activeAIEntityCount.decrementAndGet();
 		}
 		if (chunkData.activeGravity) {
-			activeGravityEntityCount--;
+			activeGravityEntityCount.decrementAndGet();
 		}
 	}
 
@@ -325,11 +332,11 @@ public class EntityAI implements Listener {
 	// STATISTICS
 
 	private void resetStatistics() {
-		activeAIChunksCount = 0;
-		activeAIEntityCount = 0;
+		activeAIChunksCount.set(0);
+		activeAIEntityCount.set(0);
 
-		activeGravityChunksCount = 0;
-		activeGravityEntityCount = 0;
+		activeGravityChunksCount.set(0);
+		activeGravityEntityCount.set(0);
 
 		totalTimings.reset();
 		activationTimings.reset();
@@ -342,19 +349,19 @@ public class EntityAI implements Listener {
 	}
 
 	public int getActiveAIChunksCount() {
-		return activeAIChunksCount;
+		return activeAIChunksCount.get();
 	}
 
 	public int getActiveAIEntityCount() {
-		return activeAIEntityCount;
+		return activeAIEntityCount.get();
 	}
 
 	public int getActiveGravityChunksCount() {
-		return activeGravityChunksCount;
+		return activeGravityChunksCount.get();
 	}
 
 	public int getActiveGravityEntityCount() {
-		return activeGravityEntityCount;
+		return activeGravityEntityCount.get();
 	}
 
 	public Timings getTotalTimings() {
@@ -378,11 +385,14 @@ public class EntityAI implements Listener {
 	private void startTask() {
 		if (aiTask != null) return; // Already running
 
-		// Start AI task:
+		// Start AI task. The sweep itself doesn't touch any specific location/entity (it only
+		// decides which chunks/entities are due and dispatches their actual processing
+		// individually, see processEntities()), so it runs on the global scheduler.
 		int tickPeriod = Settings.entityBehaviorTickPeriod;
-		aiTask = Bukkit.getScheduler().runTaskTimer(
+		Runnable tickTask = new TickTask();
+		aiTask = Bukkit.getGlobalRegionScheduler().runAtFixedRate(
 				plugin,
-				new TickTask(),
+				scheduledTask -> tickTask.run(),
 				tickPeriod,
 				tickPeriod
 		);
@@ -446,8 +456,8 @@ public class EntityAI implements Listener {
 			chunkData.activeAI = false;
 			chunkData.activeGravity = false;
 		});
-		activeAIChunksCount = 0;
-		activeGravityChunksCount = 0;
+		activeAIChunksCount.set(0);
+		activeGravityChunksCount.set(0);
 
 		// Activate chunks around online players:
 		for (Player player : Bukkit.getOnlinePlayers()) {
@@ -463,7 +473,7 @@ public class EntityAI implements Listener {
 	// all chunks that no longer require activation.
 	private void activateNearbyChunks(Player player) {
 		World world = player.getWorld();
-		Location location = Unsafe.assertNonNull(player.getLocation(sharedLocation));
+		Location location = Unsafe.assertNonNull(player.getLocation(new Location(null, 0, 0, 0)));
 		// Note: On some Paper versions with their async chunk loading, the player's current chunk
 		// may sometimes not be loaded yet. We therefore avoid accessing (and thereby loading) that
 		// chunk here, but instead only use its coordinates. The subsequent activation of nearby
@@ -488,12 +498,11 @@ public class EntityAI implements Listener {
 					ActivationType.GRAVITY
 			);
 		}
-		sharedLocation.setWorld(null); // Reset
 	}
 
 	private void activateNearbyChunksDelayed(Player player) {
 		if (!player.isOnline()) return; // Player is no longer online
-		Bukkit.getScheduler().runTask(plugin, new ActivateNearbyChunksDelayedTask(player));
+		SchedulerUtils.runOnEntityOrOmit(plugin, player, new ActivateNearbyChunksDelayedTask(player));
 	}
 
 	private class ActivateNearbyChunksDelayedTask implements Runnable {
@@ -530,23 +539,24 @@ public class EntityAI implements Listener {
 		int maxChunkX = centerChunkX + chunkRadius;
 		int minChunkZ = centerChunkZ - chunkRadius;
 		int maxChunkZ = centerChunkZ + chunkRadius;
+		MutableChunkCoords chunkCoordsLookup = new MutableChunkCoords();
 		for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
 			for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
-				sharedChunkCoords.set(worldName, chunkX, chunkZ);
-				ChunkData chunkData = chunks.get(sharedChunkCoords);
+				chunkCoordsLookup.set(worldName, chunkX, chunkZ);
+				ChunkData chunkData = chunks.get(chunkCoordsLookup);
 				if (chunkData == null) continue;
 
 				switch (activationType) {
 				case GRAVITY:
 					if (!chunkData.activeGravity) {
 						chunkData.activeGravity = true;
-						activeGravityChunksCount++;
+						activeGravityChunksCount.incrementAndGet();
 					}
 					break;
 				case AI:
 					if (!chunkData.activeAI) {
 						chunkData.activeAI = true;
-						activeAIChunksCount++;
+						activeAIChunksCount.incrementAndGet();
 					}
 					break;
 				default:
@@ -560,16 +570,38 @@ public class EntityAI implements Listener {
 	// ENTITY PROCESSING
 
 	private void processEntities() {
-		activeAIEntityCount = 0;
-		activeGravityEntityCount = 0;
-
-		if (activeAIChunksCount == 0 && activeGravityChunksCount == 0) {
+		if (activeAIChunksCount.get() == 0 && activeGravityChunksCount.get() == 0) {
 			// There is no need to process any entities if there are no chunks with active AI or
 			// gravity:
 			return;
 		}
 
-		chunks.values().forEach(this::processEntities);
+		// Each chunk's entities are dispatched to the region owning that chunk, since different
+		// chunks in this AI system can be spread across the whole server. The per-entity/chunk
+		// active counts are reset and re-accumulated as each chunk's processing actually runs
+		// (which happens asynchronously relative to this sweep), rather than around this loop.
+		activeAIEntityCount.set(0);
+		activeGravityEntityCount.set(0);
+		chunks.values().forEach(chunkData -> {
+			if (!chunkData.activeGravity && !chunkData.activeAI) {
+				// There is no need to process the chunk's entities:
+				return;
+			}
+			ChunkCoords chunkCoords = chunkData.chunkCoords;
+			World world = chunkCoords.getWorld();
+			if (world != null) {
+				SchedulerUtils.runOnChunkLaterOrOmit(
+						plugin,
+						world,
+						chunkCoords.getChunkX(),
+						chunkCoords.getChunkZ(),
+						() -> this.processEntities(chunkData),
+						1L
+				);
+			} else {
+				SchedulerUtils.runGlobalOrOmit(plugin, () -> this.processEntities(chunkData));
+			}
+		});
 	}
 
 	private void processEntities(ChunkData chunkData) {
@@ -609,7 +641,7 @@ public class EntityAI implements Listener {
 		// Process gravity:
 		gravityTimings.resume();
 		if (chunkData.activeGravity && entityData.isAffectedByGravity()) {
-			activeGravityEntityCount++;
+			activeGravityEntityCount.incrementAndGet();
 			this.processGravity(entityData);
 		}
 		gravityTimings.pause();
@@ -617,7 +649,7 @@ public class EntityAI implements Listener {
 		// Process AI:
 		aiTimings.resume();
 		if (chunkData.activeAI) {
-			activeAIEntityCount++;
+			activeAIEntityCount.incrementAndGet();
 			this.processAI(entityData);
 		}
 		aiTimings.pause();
@@ -646,7 +678,9 @@ public class EntityAI implements Listener {
 			// to the raytrace itself, and that this optimization attempt even adds a small
 			// performance impact on top instead.
 			Entity entity = Unsafe.assertNonNull(entityData.shopObject.getEntity());
-			Location entityLocation = Unsafe.assertNonNull(entity.getLocation(sharedLocation));
+			Location entityLocation = Unsafe.assertNonNull(
+					entity.getLocation(new Location(null, 0, 0, 0))
+			);
 
 			// The entity may be able to stand on certain types of fluids:
 			Set<? extends Material> collidableFluids = EntityUtils.getCollidableFluids(
@@ -674,7 +708,6 @@ public class EntityAI implements Listener {
 					gravityCollisionCheckRange,
 					collidableFluids
 			);
-			sharedLocation.setWorld(null); // Reset
 			boolean isInAir = (entityData.distanceToGround >= DISTANCE_TO_GROUND_THRESHOLD);
 			boolean falling = isInAir && !EntityUtils.canFly(entity.getType());
 			entityData.falling = falling;
@@ -719,12 +752,10 @@ public class EntityAI implements Listener {
 		}
 
 		// Teleport the entity to its new location:
-		Location newLocation = Unsafe.assertNonNull(entity.getLocation(sharedLocation));
+		Location newLocation = Unsafe.assertNonNull(entity.getLocation(new Location(null, 0, 0, 0)));
 		newLocation.add(0.0D, -fallingStepSize, 0.0D);
 
 		plugin.getForcingEntityTeleporter().teleport(entity, newLocation);
-
-		sharedLocation.setWorld(null); // Reset
 	}
 
 	// ENTITY AI

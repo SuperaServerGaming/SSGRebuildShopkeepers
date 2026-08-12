@@ -3,14 +3,16 @@ package com.nisovin.shopkeepers.commands;
 import java.util.HashMap;
 import java.util.Map;
 
-import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ProxiedCommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+
 import com.nisovin.shopkeepers.lang.Messages;
+import com.nisovin.shopkeepers.util.bukkit.SchedulerUtils;
 import com.nisovin.shopkeepers.util.bukkit.TextUtils;
 import com.nisovin.shopkeepers.util.java.Validate;
 
@@ -19,15 +21,15 @@ public class Confirmations {
 	private static class PendingConfirmation {
 
 		private final Runnable action;
-		private final int taskId;
+		private final @Nullable ScheduledTask task;
 
-		public PendingConfirmation(Runnable action, int taskId) {
-			this.taskId = taskId;
+		public PendingConfirmation(Runnable action, @Nullable ScheduledTask task) {
+			this.task = task;
 			this.action = action;
 		}
 
-		public int getTaskId() {
-			return taskId;
+		public @Nullable ScheduledTask getTask() {
+			return task;
 		}
 
 		public Runnable getAction() {
@@ -85,18 +87,26 @@ public class Confirmations {
 		Validate.notNull(action, "action is null");
 		Validate.isTrue(timeoutTicks > 0, "timeoutTicks has to be positive");
 
-		int taskId = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+		Runnable expireAction = () -> {
 			this.endConfirmation(sender);
 			TextUtils.sendMessage(sender, Messages.confirmationExpired);
-		}, timeoutTicks).getTaskId();
+		};
+		// Players tick on their own region; any other sender (console, command blocks, ...) has
+		// no location tied to it, so the timeout runs on the global thread instead.
+		ScheduledTask task = (sender instanceof Player)
+				? SchedulerUtils.runOnEntityLaterOrOmit(plugin, (Player) sender, expireAction, timeoutTicks)
+				: SchedulerUtils.runGlobalLaterOrOmit(plugin, expireAction, timeoutTicks);
 
 		PendingConfirmation previousPendingConfirmation = pendingConfirmations.put(
 				this.getSenderKey(sender),
-				new PendingConfirmation(action, taskId)
+				new PendingConfirmation(action, task)
 		);
 		if (previousPendingConfirmation != null) {
 			// Cancel the previous pending confirmation task:
-			Bukkit.getScheduler().cancelTask(previousPendingConfirmation.getTaskId());
+			ScheduledTask previousTask = previousPendingConfirmation.getTask();
+			if (previousTask != null) {
+				previousTask.cancel();
+			}
 		}
 	}
 
@@ -106,7 +116,10 @@ public class Confirmations {
 		PendingConfirmation pendingConfirmation = pendingConfirmations.remove(this.getSenderKey(sender));
 		if (pendingConfirmation != null) {
 			// End confirmation task:
-			Bukkit.getScheduler().cancelTask(pendingConfirmation.getTaskId());
+			ScheduledTask task = pendingConfirmation.getTask();
+			if (task != null) {
+				task.cancel();
+			}
 
 			// Return action:
 			return pendingConfirmation.getAction();

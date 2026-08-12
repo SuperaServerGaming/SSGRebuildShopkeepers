@@ -2,17 +2,18 @@ package com.nisovin.shopkeepers.shopkeeper.ticking;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
-import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.Bukkit;
+import org.bukkit.Location;
 
 import com.nisovin.shopkeepers.SKShopkeepersPlugin;
 import com.nisovin.shopkeepers.debug.DebugOptions;
 import com.nisovin.shopkeepers.shopkeeper.AbstractShopkeeper;
+import com.nisovin.shopkeepers.util.bukkit.SchedulerUtils;
 import com.nisovin.shopkeepers.util.java.CyclicCounter;
 import com.nisovin.shopkeepers.util.java.Validate;
 import com.nisovin.shopkeepers.util.logging.Log;
@@ -48,7 +49,9 @@ public class ShopkeeperTicker {
 
 	private static final class TickingGroup {
 
-		private final Set<AbstractShopkeeper> shopkeepers = new LinkedHashSet<>();
+		// Thread-safe: shopkeepers ticking on different regions can concurrently add/remove
+		// themselves (or other shopkeepers) from their own ticking group.
+		private final Set<AbstractShopkeeper> shopkeepers = ConcurrentHashMap.newKeySet();
 
 		TickingGroup() {
 		}
@@ -84,15 +87,18 @@ public class ShopkeeperTicker {
 	}
 
 	private final CyclicCounter activeTickingGroup = new CyclicCounter(TICKING_GROUPS);
-	private boolean currentlyTicking = false;
-	private boolean dirty;
+	private volatile boolean currentlyTicking = false;
 
 	// True: Ticking started, False: Ticking stopped
 	// Note: The start/stop-ticking callbacks for these pending changes have already been invoked
 	// and only the actual registration change is deferred, because if a shopkeeper changes its
 	// ticking state multiple times during the same tick we would otherwise lose the callbacks for
 	// the intermediate ticking state changes.
-	private final Map<AbstractShopkeeper, Boolean> pendingTickingChanges = new LinkedHashMap<>();
+	// Thread-safe: since each shopkeeper's tick is now dispatched to (and actually runs on) its
+	// own region, the window during which currentlyTicking is true is very short (just the
+	// dispatch loop below, not the ticks themselves), but a shopkeeper on another region could
+	// still race to register a change during that window.
+	private final Map<AbstractShopkeeper, Boolean> pendingTickingChanges = new ConcurrentHashMap<>();
 
 	public ShopkeeperTicker(SKShopkeepersPlugin plugin) {
 		Validate.notNull(plugin, "plugin is null");
@@ -119,7 +125,6 @@ public class ShopkeeperTicker {
 		if (currentlyTicking) {
 			// Reset:
 			currentlyTicking = false;
-			dirty = false;
 			tickingGroups.forEach(TickingGroup::clear);
 			pendingTickingChanges.clear();
 		} else {
@@ -217,30 +222,25 @@ public class ShopkeeperTicker {
 
 	// TICKING
 
+	private static final int TICK_TASK_PERIOD = TICKING_PERIOD_TICKS / TICKING_GROUPS;
+
 	private void startShopkeeperTickTask() {
-		new ShopkeeperTickTask().start();
-	}
-
-	private final class ShopkeeperTickTask extends BukkitRunnable {
-
-		private static final int PERIOD = TICKING_PERIOD_TICKS / TICKING_GROUPS;
-
-		void start() {
-			this.runTaskTimer(plugin, PERIOD, PERIOD);
-		}
-
-		@Override
-		public void run() {
-			tickShopkeepers();
-		}
+		// The sweep itself (deciding which shopkeepers are due) doesn't touch any specific
+		// location/entity, so it runs on the global scheduler. Each shopkeeper's actual tick is
+		// then dispatched individually to the region owning its location, since different
+		// shopkeepers in the same ticking group can be anywhere on the server.
+		Bukkit.getGlobalRegionScheduler().runAtFixedRate(
+				plugin,
+				scheduledTask -> tickShopkeepers(),
+				TICK_TASK_PERIOD,
+				TICK_TASK_PERIOD
+		);
 	}
 
 	private void tickShopkeepers() {
-		dirty = false;
-
 		currentlyTicking = true;
 		TickingGroup tickingGroup = this.getTickingGroup(activeTickingGroup.getValue());
-		tickingGroup.getShopkeepers().forEach(this::tickShopkeeper);
+		tickingGroup.getShopkeepers().forEach(this::dispatchTickShopkeeper);
 		currentlyTicking = false;
 
 		// Process pending shopkeeper ticking registration changes:
@@ -253,14 +253,20 @@ public class ShopkeeperTicker {
 		});
 		pendingTickingChanges.clear();
 
-		// Trigger a delayed save if any of the shopkeepers got marked as dirty or deleted during
-		// the ticking:
-		if (dirty) {
-			plugin.getShopkeeperStorage().saveDelayed();
-		}
-
 		// Update the active ticking group:
 		activeTickingGroup.getAndIncrement();
+	}
+
+	// Dispatches the actual tick to the region owning the shopkeeper's location. Falls back to
+	// the global scheduler for shopkeepers without a location (e.g. virtual shopkeepers).
+	private void dispatchTickShopkeeper(AbstractShopkeeper shopkeeper) {
+		assert shopkeeper != null;
+		Location location = shopkeeper.getLocation();
+		if (location != null) {
+			SchedulerUtils.runOnLocationOrOmit(plugin, location, () -> this.tickShopkeeper(shopkeeper));
+		} else {
+			SchedulerUtils.runGlobalOrOmit(plugin, () -> this.tickShopkeeper(shopkeeper));
+		}
 	}
 
 	private void tickShopkeeper(AbstractShopkeeper shopkeeper) {
@@ -276,10 +282,12 @@ public class ShopkeeperTicker {
 			Log.severe(shopkeeper.getLogPrefix() + "Error during ticking!", e);
 		}
 
-		// If the shopkeeper was modified or deleted during the tick: Subsequently trigger a delayed
-		// save of the storage.
+		// If the shopkeeper was modified or deleted during the tick: Subsequently trigger a
+		// delayed save of the storage. Checked here (per shopkeeper, right after its own tick)
+		// rather than batched after the whole ticking group, since the group's dispatch loop
+		// above returns long before the individual ticks it dispatched have actually run.
 		if (shopkeeper.isDirty() || !shopkeeper.isValid()) {
-			dirty = true;
+			plugin.getShopkeeperStorage().saveDelayed();
 		}
 	}
 }

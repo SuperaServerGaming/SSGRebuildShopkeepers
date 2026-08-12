@@ -16,8 +16,9 @@ import org.bukkit.Server;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.HandlerList;
-import org.bukkit.scheduler.BukkitTask;
 import org.checkerframework.checker.nullness.qual.Nullable;
+
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 
 import com.nisovin.shopkeepers.SKShopkeepersPlugin;
 import com.nisovin.shopkeepers.api.internal.util.Unsafe;
@@ -28,6 +29,7 @@ import com.nisovin.shopkeepers.shopkeeper.registry.SKShopkeeperRegistry;
 import com.nisovin.shopkeepers.shopkeeper.spawning.ShopkeeperSpawner;
 import com.nisovin.shopkeepers.shopkeeper.ticking.ShopkeeperTicker;
 import com.nisovin.shopkeepers.util.bukkit.MutableChunkCoords;
+import com.nisovin.shopkeepers.util.bukkit.SchedulerUtils;
 import com.nisovin.shopkeepers.util.bukkit.TextUtils;
 import com.nisovin.shopkeepers.util.java.Validate;
 import com.nisovin.shopkeepers.util.logging.Log;
@@ -303,11 +305,18 @@ public class ShopkeeperChunkActivator {
 
 		void start() {
 			assert !chunkData.isActive() && !chunkData.isActivationDelayed();
-			BukkitTask task = Bukkit.getScheduler().runTaskLater(
-					plugin,
-					this,
-					CHUNK_ACTIVATION_DELAY_TICKS
-			);
+			ChunkCoords chunkCoords = chunkData.getChunkCoords();
+			World world = chunkCoords.getWorld();
+			ScheduledTask task = (world != null)
+					? SchedulerUtils.runOnChunkLaterOrOmit(
+							plugin,
+							world,
+							chunkCoords.getChunkX(),
+							chunkCoords.getChunkZ(),
+							this,
+							CHUNK_ACTIVATION_DELAY_TICKS
+					)
+					: SchedulerUtils.runGlobalLaterOrOmit(plugin, this, CHUNK_ACTIVATION_DELAY_TICKS);
 			chunkData.setDelayedActivationTask(task);
 		}
 
@@ -321,7 +330,7 @@ public class ShopkeeperChunkActivator {
 
 	void activatePendingNearbyChunksDelayed(Player player) {
 		assert player != null;
-		Bukkit.getScheduler().runTask(plugin, new ActivatePendingNearbyChunksTask(player));
+		SchedulerUtils.runOnEntityOrOmit(plugin, player, new ActivatePendingNearbyChunksTask(player));
 	}
 
 	private class ActivatePendingNearbyChunksTask implements Runnable {

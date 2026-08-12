@@ -9,8 +9,9 @@ import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitTask;
 import org.checkerframework.checker.nullness.qual.Nullable;
+
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 
 import com.nisovin.shopkeepers.api.ShopkeepersPlugin;
 import com.nisovin.shopkeepers.api.internal.util.Unsafe;
@@ -63,7 +64,7 @@ public abstract class AbstractSingleWriterTradeLogger implements TradeLogger {
 
 	private List<TradeRecord> pending = new ArrayList<>();
 	private final SaveTask saveTask;
-	private @Nullable BukkitTask delayedSaveTask = null;
+	private @Nullable ScheduledTask delayedSaveTask = null;
 	// This is reset to the current configuration value prior to every save. This ensures that the
 	// value of this setting remains constant during the save and does not differ for the items of
 	// the trades that are being saved as part of the same batch.
@@ -209,7 +210,7 @@ public abstract class AbstractSingleWriterTradeLogger implements TradeLogger {
 			return;
 		}
 
-		delayedSaveTask = SchedulerUtils.runTaskLaterOrOmit(
+		delayedSaveTask = SchedulerUtils.runGlobalLaterOrOmit(
 				plugin,
 				new DelayedSaveTask(),
 				DELAYED_SAVE_TICKS

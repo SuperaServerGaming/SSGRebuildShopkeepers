@@ -11,13 +11,15 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
-import org.bukkit.scheduler.BukkitTask;
 import org.checkerframework.checker.nullness.qual.Nullable;
+
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 
 import com.nisovin.shopkeepers.api.ShopkeepersPlugin;
 import com.nisovin.shopkeepers.api.internal.util.Unsafe;
 import com.nisovin.shopkeepers.api.shopkeeper.Shopkeeper;
 import com.nisovin.shopkeepers.debug.DebugOptions;
+import com.nisovin.shopkeepers.util.bukkit.SchedulerUtils;
 import com.nisovin.shopkeepers.util.logging.Log;
 
 import net.citizensnpcs.api.event.CitizensReloadEvent;
@@ -56,11 +58,14 @@ class CitizensListener implements Listener {
 		// The uuids of the last NPC and the last player encountered in relevant events:
 		private @Nullable UUID lastNPCId = null;
 		private @Nullable UUID lastPlayerId = null;
+		// The NPC itself, kept alongside its id so that the deferred pendingTraitTask below can be
+		// dispatched to the region owning its entity/location:
+		private @Nullable NPC lastNpc = null;
 		// The shopkeeper trait awaiting to be handled:
 		private @Nullable CitizensShopkeeperTrait pendingTrait = null;
 		// The task which handles the pending trait if we don't end up handling it within the
 		// current tick:
-		private @Nullable BukkitTask pendingTraitTask = null;
+		private @Nullable ScheduledTask pendingTraitTask = null;
 
 		PendingTraitState(ShopkeepersPlugin plugin) {
 			assert plugin != null;
@@ -78,6 +83,7 @@ class CitizensListener implements Listener {
 
 			// Set new last encountered NPC:
 			lastNPCId = npcId;
+			lastNpc = npc;
 		}
 
 		void updatePendingTrait(NPC npc, CitizensShopkeeperTrait trait) {
@@ -138,10 +144,28 @@ class CitizensListener implements Listener {
 				// just in case.
 				assert pendingTraitTask == null;
 				if (pendingTraitTask == null || Unsafe.assertNonNull(pendingTraitTask).isCancelled()) {
-					pendingTraitTask = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+					Runnable delayedReset = () -> {
 						pendingTraitTask = null; // Reset
 						reset(); // Handles any currently pending trait
-					}, 1L);
+					};
+					// Dispatch to the region owning the NPC's entity (if currently spawned) or its
+					// stored location (if not), falling back to global if neither is available.
+					NPC npc = this.lastNpc;
+					Entity npcEntity = (npc != null) ? npc.getEntity() : null;
+					Location npcLocation = (npc != null) ? npc.getStoredLocation() : null;
+					if (npcEntity != null) {
+						pendingTraitTask = SchedulerUtils.runOnEntityLaterOrOmit(
+								plugin, npcEntity, delayedReset, 1L
+						);
+					} else if (npcLocation != null) {
+						pendingTraitTask = SchedulerUtils.runOnLocationLaterOrOmit(
+								plugin, npcLocation, delayedReset, 1L
+						);
+					} else {
+						pendingTraitTask = SchedulerUtils.runGlobalLaterOrOmit(
+								plugin, delayedReset, 1L
+						);
+					}
 				} // Else: There is already an active task that will handle the pending trait later.
 			}
 		}
@@ -153,6 +177,7 @@ class CitizensListener implements Listener {
 			}
 			this.lastNPCId = null;
 			this.lastPlayerId = null;
+			this.lastNpc = null;
 			if (pendingTraitTask != null) {
 				pendingTraitTask.cancel();
 				pendingTraitTask = null;

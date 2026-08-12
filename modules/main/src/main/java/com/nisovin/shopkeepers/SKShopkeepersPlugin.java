@@ -561,7 +561,6 @@ public class SKShopkeepersPlugin extends JavaPlugin implements InternalShopkeepe
 		}
 
 		HandlerList.unregisterAll(this);
-		Bukkit.getScheduler().cancelTasks(this);
 
 		InternalShopkeepersAPI.disable();
 		plugin = null;

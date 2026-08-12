@@ -9,6 +9,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.event.HandlerList;
 import org.checkerframework.checker.nullness.qual.Nullable;
@@ -25,6 +26,7 @@ import com.nisovin.shopkeepers.shopkeeper.registry.SKShopkeeperRegistry;
 import com.nisovin.shopkeepers.shopkeeper.spawning.ShopkeeperSpawnState.State;
 import com.nisovin.shopkeepers.shopobjects.AbstractShopObject;
 import com.nisovin.shopkeepers.shopobjects.AbstractShopObjectType;
+import com.nisovin.shopkeepers.util.bukkit.SchedulerUtils;
 import com.nisovin.shopkeepers.util.bukkit.TextUtils;
 import com.nisovin.shopkeepers.util.java.Validate;
 import com.nisovin.shopkeepers.util.logging.Log;
@@ -96,7 +98,7 @@ public class ShopkeeperSpawner {
 
 		Bukkit.getPluginManager().registerEvents(listener, plugin);
 
-		Bukkit.getScheduler().runTaskLater(plugin, new CheckUnspawnableShopkeepersTask(), 5L);
+		SchedulerUtils.runGlobalLaterOrOmit(plugin, new CheckUnspawnableShopkeepersTask(), 5L);
 	}
 
 	private class CheckUnspawnableShopkeepersTask implements Runnable {
@@ -725,13 +727,28 @@ public class ShopkeeperSpawner {
 			// removed, the previously set spawn states of the shopkeepers have already been reset
 			// again. Any shopkeepers that have been newly added to the chunk in the meantime are
 			// ignored in the following, since their spawn states will not be 'spawning'.
-			this.spawnChunkShopkeepers(
+			// Dispatched per chunk to the region that owns it (unlike ShopkeeperChunkActivator's
+			// direct calls into spawnChunkShopkeepers, which are already dispatched by their caller).
+			this.runOnChunkOrOmit(chunkCoords, () -> this.spawnChunkShopkeepers(
 					chunkCoords,
 					spawnReason,
 					newShopkeeperFilter,
 					spawnImmediately
-			);
+			));
 		});
+	}
+
+	// Dispatches the given task to the region owning the chunk, or the global scheduler as a
+	// fallback if the chunk's world is no longer loaded.
+	private void runOnChunkOrOmit(ChunkCoords chunkCoords, Runnable task) {
+		World world = chunkCoords.getWorld();
+		if (world != null) {
+			SchedulerUtils.runOnChunkLaterOrOmit(
+					plugin, world, chunkCoords.getChunkX(), chunkCoords.getChunkZ(), task, 1L
+			);
+		} else {
+			SchedulerUtils.runGlobalOrOmit(plugin, task);
+		}
 	}
 
 	void despawnShopkeepersInWorld(
@@ -781,12 +798,12 @@ public class ShopkeeperSpawner {
 			// again. Any shopkeepers that have been newly added to the chunk in the meantime are
 			// ignored in the following, since their spawn states will not be 'despawning'.
 			if (!shopkeeperRegistry.isChunkActive(chunkCoords)) return;
-			this.despawnChunkShopkeepers(
+			this.runOnChunkOrOmit(chunkCoords, () -> this.despawnChunkShopkeepers(
 					chunkCoords,
 					despawnReason,
 					newShopkeeperFilter,
 					onDespawned
-			);
+			));
 		});
 	}
 
@@ -827,9 +844,15 @@ public class ShopkeeperSpawner {
 
 		if (!unspawnableShopkeepers.isEmpty()) {
 			if (deleteUnspawnableShopkeepers) {
-				// Delete those shopkeepers:
+				// Delete those shopkeepers. Each deletion despawns that shopkeeper's own shop
+				// object, so it is dispatched to the region owning that specific location.
 				for (Shopkeeper shopkeeper : unspawnableShopkeepers) {
-					shopkeeper.delete();
+					Location shopLocation = shopkeeper.getLocation();
+					if (shopLocation != null) {
+						SchedulerUtils.runOnLocationOrOmit(plugin, shopLocation, shopkeeper::delete);
+					} else {
+						SchedulerUtils.runGlobalOrOmit(plugin, shopkeeper::delete);
+					}
 				}
 
 				// Save:

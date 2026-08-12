@@ -3,7 +3,6 @@ package com.nisovin.shopkeepers.shopobjects.living.types.villager;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Sound;
 import org.bukkit.SoundCategory;
@@ -13,8 +12,9 @@ import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.TradeSelectEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.MerchantInventory;
-import org.bukkit.scheduler.BukkitTask;
 import org.checkerframework.checker.nullness.qual.Nullable;
+
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 
 import com.nisovin.shopkeepers.SKShopkeepersPlugin;
 import com.nisovin.shopkeepers.api.ShopkeepersAPI;
@@ -31,6 +31,7 @@ import com.nisovin.shopkeepers.ui.trading.Trade;
 import com.nisovin.shopkeepers.ui.trading.TradingContext;
 import com.nisovin.shopkeepers.ui.trading.TradingListener;
 import com.nisovin.shopkeepers.util.bukkit.LocationUtils;
+import com.nisovin.shopkeepers.util.bukkit.SchedulerUtils;
 import com.nisovin.shopkeepers.util.bukkit.Ticks;
 import com.nisovin.shopkeepers.util.inventory.ItemUtils;
 import com.nisovin.shopkeepers.util.java.MathUtils;
@@ -66,7 +67,7 @@ public class VillagerSounds extends TradingListener {
 	private final LivingShopObject shopObject;
 
 	private long lastSoundNanos = System.nanoTime();
-	private @Nullable BukkitTask tradeInteractionTask = null;
+	private @Nullable ScheduledTask tradeInteractionTask = null;
 
 	public VillagerSounds(SKLivingShopObject<? extends AbstractVillager> shopObject) {
 		Validate.notNull(shopObject, "shopObject is null");
@@ -232,10 +233,15 @@ public class VillagerSounds extends TradingListener {
 			// We are already about to process another inventory interaction.
 			return;
 		}
-		tradeInteractionTask = Bukkit.getScheduler().runTask(
-				SKShopkeepersPlugin.getInstance(),
-				new ProcessTradeInteractionTask(uiSession)
-		);
+		// Plays sounds at/mutates the villager, so it must run on the region that ticks it. Falls
+		// back to global if the entity isn't currently spawned (the task then just no-ops on the
+		// stale UI session check below).
+		var entity = shopObject.getEntity();
+		var task = new ProcessTradeInteractionTask(uiSession);
+		var plugin = SKShopkeepersPlugin.getInstance();
+		tradeInteractionTask = (entity != null)
+				? SchedulerUtils.runOnEntityLaterOrOmit(plugin, entity, task, 1L)
+				: SchedulerUtils.runGlobalLaterOrOmit(plugin, task, 1L);
 	}
 
 	private class ProcessTradeInteractionTask implements Runnable {
