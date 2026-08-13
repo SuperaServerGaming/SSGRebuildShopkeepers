@@ -1,4 +1,4 @@
-name: Shopkeepers
+name: SSGRebuildShopkeepers
 version: '${pluginVersion}'
 description: Custom villager shopkeepers
 authors: [nisovin, blablubbabc]
@@ -240,3 +240,8 @@ permissions:
             shopkeeper.sign: true
             shopkeeper.citizen: true
             shopkeeper.entity.*: true
+
+    # ShopGreeter (merged from the former SSGShopGreeter addon):
+    ssgshopgreeter.admin:
+        description: Permite configurar a mensagem de proximidade de um vendedor
+        default: op

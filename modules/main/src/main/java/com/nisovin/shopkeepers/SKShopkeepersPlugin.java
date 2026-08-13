@@ -78,6 +78,9 @@ import com.nisovin.shopkeepers.util.logging.Log;
 import com.nisovin.shopkeepers.villagers.RegularVillagers;
 import com.nisovin.shopkeepers.world.ForcingEntitySpawner;
 import com.nisovin.shopkeepers.world.ForcingEntityTeleporter;
+import com.ssg.shopgreeter.GreeterService;
+import com.ssg.shopgreeter.GreeterStore;
+import com.ssg.shopgreeter.ShopkeepersIntegration;
 
 public class SKShopkeepersPlugin extends JavaPlugin implements InternalShopkeepersPlugin {
 
@@ -186,6 +189,13 @@ public class SKShopkeepersPlugin extends JavaPlugin implements InternalShopkeepe
 	);
 
 	private final PluginMetrics pluginMetrics = new PluginMetrics(Unsafe.initialized(this));
+
+	// ShopGreeter (merged from the former SSGShopGreeter addon):
+	private final GreeterStore shopGreeterStore = new GreeterStore(Unsafe.initialized(this));
+	private final GreeterService shopGreeterService = new GreeterService(
+			Unsafe.initialized(this),
+			shopGreeterStore
+	);
 
 	private boolean outdatedServer = false;
 	private boolean incompatibleServer = false;
@@ -472,6 +482,16 @@ public class SKShopkeepersPlugin extends JavaPlugin implements InternalShopkeepe
 
 		// Event debugger:
 		eventDebugger.onEnable();
+
+		// ShopGreeter (merged from the former SSGShopGreeter addon):
+		shopGreeterStore.load();
+		shopGreeterService.start();
+		com.ssg.shopgreeter.ChatInput shopGreeterChatInput = new com.ssg.shopgreeter.ChatInput(this);
+		pm.registerEvents(shopGreeterChatInput, this);
+		pm.registerEvents(
+				new ShopkeepersIntegration(this, shopGreeterStore, shopGreeterService, shopGreeterChatInput),
+				this
+		);
 	}
 
 	@Override
@@ -482,6 +502,9 @@ public class SKShopkeepersPlugin extends JavaPlugin implements InternalShopkeepe
 				ASYNC_TASKS_TIMEOUT_SECONDS,
 				this.getLogger()
 		);
+
+		// ShopGreeter (merged from the former SSGShopGreeter addon):
+		shopGreeterService.stop();
 
 		// Disable UI system:
 		uiSystem.onDisable();
