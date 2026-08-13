@@ -1,5 +1,6 @@
 package com.ssg.shopgreeter;
 
+import com.nisovin.shopkeepers.api.internal.util.Unsafe;
 import io.papermc.paper.event.player.AsyncChatEvent;
 import java.util.Map;
 import java.util.UUID;
@@ -32,7 +33,7 @@ public final class ChatInput implements Listener {
         }
 
         event.setCancelled(true);
-        String message = PlainTextComponentSerializer.plainText().serialize(event.message());
+        String message = PlainTextComponentSerializer.plainText().serialize(Unsafe.assertNonNull(event.message()));
         event.getPlayer().getScheduler().run(plugin, t -> handler.accept(message), null);
     }
 }

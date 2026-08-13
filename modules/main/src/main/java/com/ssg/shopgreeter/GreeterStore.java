@@ -1,5 +1,6 @@
 package com.ssg.shopgreeter;
 
+import com.nisovin.shopkeepers.api.internal.util.Unsafe;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
@@ -10,6 +11,7 @@ import java.util.logging.Level;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 public final class GreeterStore {
     public static final double DEFAULT_RADIUS = 4.0;
@@ -36,14 +38,14 @@ public final class GreeterStore {
         }
 
         for (String key : root.getKeys(false)) {
-            ConfigurationSection s = root.getConfigurationSection(key);
+            ConfigurationSection s = root.getConfigurationSection(Unsafe.assertNonNull(key));
             if (s == null) {
                 continue;
             }
             try {
-                UUID shopkeeperId = UUID.fromString(key);
+                UUID shopkeeperId = UUID.fromString(Unsafe.assertNonNull(key));
                 GreeterPoint point = new GreeterPoint(shopkeeperId, s.getDouble("radius", DEFAULT_RADIUS));
-                point.getMessages().addAll(s.getStringList("messages"));
+                point.getMessages().addAll(Unsafe.cast(s.getStringList("messages")));
                 points.put(shopkeeperId, point);
             } catch (IllegalArgumentException e) {
                 plugin.getLogger().warning("Chave invalida em greeters.yml, ignorando: " + key);
@@ -62,14 +64,14 @@ public final class GreeterStore {
         }
 
         try {
-            file.getParentFile().mkdirs();
+            Unsafe.assertNonNull(file.getParentFile()).mkdirs();
             yaml.save(file);
         } catch (IOException e) {
             plugin.getLogger().log(Level.WARNING, "Falha ao salvar greeters.yml", e);
         }
     }
 
-    public GreeterPoint get(UUID shopkeeperId) {
+    public @Nullable GreeterPoint get(UUID shopkeeperId) {
         return points.get(shopkeeperId);
     }
 
@@ -132,7 +134,7 @@ public final class GreeterStore {
         }
     }
 
-    public GreeterPoint remove(UUID shopkeeperId) {
+    public @Nullable GreeterPoint remove(UUID shopkeeperId) {
         GreeterPoint removed = points.remove(shopkeeperId);
         if (removed != null) {
             saveAll();

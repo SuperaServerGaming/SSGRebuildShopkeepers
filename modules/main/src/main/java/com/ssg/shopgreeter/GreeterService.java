@@ -1,6 +1,7 @@
 package com.ssg.shopgreeter;
 
 import com.nisovin.shopkeepers.api.ShopkeepersAPI;
+import com.nisovin.shopkeepers.api.internal.util.Unsafe;
 import com.nisovin.shopkeepers.api.shopkeeper.Shopkeeper;
 import com.nisovin.shopkeepers.api.shopobjects.ShopObject;
 import com.nisovin.shopkeepers.api.shopobjects.entity.EntityShopObject;
@@ -20,6 +21,7 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 public final class GreeterService {
     private static final long COOLDOWN_MILLIS = 30_000L;
@@ -29,7 +31,7 @@ public final class GreeterService {
     private final GreeterStore store;
     private final Map<UUID, Set<UUID>> insidePlayersByShopkeeper = new ConcurrentHashMap<>();
     private final Map<String, Long> lastGreetingMillis = new ConcurrentHashMap<>();
-    private ScheduledTask task;
+    private @Nullable ScheduledTask task;
 
     public GreeterService(JavaPlugin plugin, GreeterStore store) {
         this.plugin = plugin;
@@ -98,7 +100,7 @@ public final class GreeterService {
 
     private String formatMessage(String template, Shopkeeper shopkeeper, Player player) {
         String shopName = coloredShopName(shopkeeper);
-        String body = template.replace("{player}", player.getName()).replace("{shop}", shopName);
+        String body = template.replace("{player}", Unsafe.assertNonNull(player.getName())).replace("{shop}", shopName);
         // Mimics vanilla chat formatting (<Name> message), keeping the shop's own nameplate color
         // as-is and resetting to default before the message body, same as a real player message would.
         String raw = "<" + shopName + "§r> " + body;

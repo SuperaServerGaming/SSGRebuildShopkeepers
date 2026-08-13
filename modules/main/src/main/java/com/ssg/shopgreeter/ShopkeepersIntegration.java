@@ -2,6 +2,7 @@ package com.ssg.shopgreeter;
 
 import com.nisovin.shopkeepers.api.events.ShopkeeperOpenUIEvent;
 import com.nisovin.shopkeepers.api.events.ShopkeeperRemoveEvent;
+import com.nisovin.shopkeepers.api.internal.util.Unsafe;
 import com.nisovin.shopkeepers.api.shopkeeper.Shopkeeper;
 import com.nisovin.shopkeepers.api.ui.DefaultUITypes;
 import java.util.ArrayList;
@@ -99,14 +100,14 @@ public final class ShopkeepersIntegration implements Listener {
 
     private ItemStack buildRadiusButton(double radius, UUID shopkeeperId) {
         ItemStack item = buildButton(Material.COMPASS, "&bDefinir raio de proximidade", ACTION_RADIUS, shopkeeperId);
-        ItemMeta meta = item.getItemMeta();
+        ItemMeta meta = Unsafe.assertNonNull(item.getItemMeta());
         meta.lore(List.of(Component.text("Raio atual: " + formatRadius(radius) + " blocos", NamedTextColor.GRAY).decoration(TextDecoration.ITALIC, false)));
         item.setItemMeta(meta);
         return item;
     }
 
     private void applyMessageLore(ItemStack item, List<String> messages) {
-        ItemMeta meta = item.getItemMeta();
+        ItemMeta meta = Unsafe.assertNonNull(item.getItemMeta());
         List<Component> lore = new ArrayList<>();
         if (messages.isEmpty()) {
             lore.add(Component.text("Nenhuma mensagem definida.", NamedTextColor.GRAY).decoration(TextDecoration.ITALIC, false));
@@ -141,7 +142,7 @@ public final class ShopkeepersIntegration implements Listener {
 
     private ItemStack buildButton(Material material, String name, String action, UUID shopkeeperId) {
         ItemStack item = new ItemStack(material);
-        ItemMeta meta = item.getItemMeta();
+        ItemMeta meta = Unsafe.assertNonNull(item.getItemMeta());
         meta.displayName(Component.text(ChatColor.translateAlternateColorCodes('&', name)).decoration(TextDecoration.ITALIC, false));
         meta.getPersistentDataContainer().set(actionKey, PersistentDataType.STRING, action);
         meta.getPersistentDataContainer().set(shopkeeperKey, PersistentDataType.STRING, shopkeeperId.toString());
@@ -156,7 +157,7 @@ public final class ShopkeepersIntegration implements Listener {
             return;
         }
 
-        ItemMeta meta = clicked.getItemMeta();
+        ItemMeta meta = Unsafe.assertNonNull(clicked.getItemMeta());
         String action = meta.getPersistentDataContainer().get(actionKey, PersistentDataType.STRING);
         String shopkeeperIdRaw = meta.getPersistentDataContainer().get(shopkeeperKey, PersistentDataType.STRING);
         if (action == null || shopkeeperIdRaw == null) {
@@ -198,7 +199,7 @@ public final class ShopkeepersIntegration implements Listener {
         player.sendMessage(Component.text("[SSG] Mensagem de proximidade adicionada.", NamedTextColor.GREEN));
 
         String preview = ChatColor.translateAlternateColorCodes(
-            '&', "<" + shopkeeperName(shopkeeperId) + "§r> " + text.replace("{player}", player.getName()).replace("{shop}", shopkeeperName(shopkeeperId))
+            '&', "<" + shopkeeperName(shopkeeperId) + "§r> " + text.replace("{player}", Unsafe.assertNonNull(player.getName())).replace("{shop}", shopkeeperName(shopkeeperId))
         );
         player.sendMessage(Component.text("Previa: ", NamedTextColor.GRAY).append(Component.text(preview)));
     }
@@ -299,8 +300,11 @@ public final class ShopkeepersIntegration implements Listener {
         }
         if (shopkeeper.getShopObject() instanceof com.nisovin.shopkeepers.api.shopobjects.entity.EntityShopObject entityShopObject) {
             org.bukkit.entity.Entity entity = entityShopObject.getEntity();
-            if (entity != null && entity.customName() != null) {
-                return net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection().serialize(entity.customName());
+            if (entity != null) {
+                net.kyori.adventure.text.Component customName = entity.customName();
+                if (customName != null) {
+                    return net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection().serialize(customName);
+                }
             }
         }
         return shopkeeper.getName();
